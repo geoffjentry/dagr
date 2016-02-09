@@ -32,37 +32,37 @@ package dagr.core.tasksystem
 object ScatterGatherPipeline {
   /** Delegates the return of the output of a given task.  The `output` method should only be called *after* this
     * task has been run. This is typically ensured by using a [[Callback]].*/
-  trait OutputTaskDelegator[Output] extends OutputTask[Output] {
-    var outputTask: Option[OutputTask[Output]] = None
-    override def output: Output = outputTask.get.output
+  trait GatherOutputTaskDelegator[Output] extends OutputTask[Output] {
+    var gatherOutputTask: Option[OutputTask[Output]] = None
+    override def gatheredOutput: Output = gatherOutputTask.get.gatheredOutput
   }
 
   /** A task that creates the gather task when getTasks is called so that we guarantee that the inputs are populated
     * in each input task prior to gather task creation.  We also facilitate the return of the gather task's output.
     * This task is set to be dependent on all input tasks during the construction of this task. */
-  class LazyOutputTaskDelegator[Output]
+  class LazyGatherOutputTaskDelegator[Output]
   (
     val inputTasks         : Iterable[OutputTask[Output]],
     val generateGatherTask : Iterable[Output] => GatherTask[Output]
-  ) extends OutputTaskDelegator[Output] {
+  ) extends GatherOutputTaskDelegator[Output] {
 
     inputTasks.foreach(_ ==> this)
 
     override def getTasks: Traversable[_ <: Task] = {
-      outputTask = Some(generateGatherTask(inputTasks.map(_.output)))
-      List(outputTask.get)
+      gatherOutputTask = Some(generateGatherTask(inputTasks.map(_.gatheredOutput)))
+      List(gatherOutputTask.get)
     }
   }
 
   /** Companion object to ScatterGatherFrameworkAdaptor that holds classes to help implement the adaptor */
   object ScatterGatherPipelineAdaptor {
-    abstract class SimpleSplitInputTask[Input, Intermediate]
+    abstract class SimpleSplitInputTask[Domain, SubDomain]
       extends SimpleInJvmTask
-      with SplitInputTask[Input, Intermediate]
+      with SplitInputTask[Domain, SubDomain]
 
-    abstract class SimpleScatterTask[Intermediate, Output]
+    abstract class SimpleScatterTask[SubDomain, Output]
       extends SimpleInJvmTask
-      with ScatterTask[Intermediate, Output]
+      with ScatterTask[SubDomain, Output]
 
     abstract class SimpleGatherTask[Output]
       extends SimpleInJvmTask
@@ -71,40 +71,40 @@ object ScatterGatherPipeline {
 
   /** A class to create a [[ScatterGatherPipeline]] from supplied methods.  This will create tasks to wrap and
     * execute each method in the correct order. This also allows other traits to mixed in as well. */
-  class ScatterGatherPipelineAdaptor[Input, Intermediate, Output]
+  class ScatterGatherPipelineAdaptor[Domain, SubDomain, Output]
   (
-      in: Input,
-      toIntermediates: Input => Iterable[Intermediate],
-      toOutput: Intermediate => Output,
-      toFinalOutput: Iterable[Output] => Output
-  ) extends ScatterGatherPipeline[Input, Intermediate, Output] {
+    inDomain: Domain,
+    toSubDomains: Domain => Iterable[SubDomain],
+    toOutput: SubDomain => Output,
+    toFinalOutput: Iterable[Output] => Output
+  ) extends ScatterGatherPipeline[Domain, SubDomain, Output] {
     import ScatterGatherPipelineAdaptor._
-    def input: Input = in
-    def splitInputTask(input: Input) = new SimpleSplitInputTask[Input, Intermediate] {
-      override def run(): Unit = _inputs = Option(toIntermediates(input))
+    def domain: Domain = inDomain
+    def splitDomainTask(domain: Domain) = new SimpleSplitInputTask[Domain, SubDomain] {
+      override def run(): Unit = _subDomains = Option(toSubDomains(domain))
     }
-    def scatterTask(intermediate: Intermediate): ScatterTask[Intermediate, Output] =
-      new SimpleScatterTask[Intermediate, Output] {
-        override def run(): Unit = _output = Option(toOutput(intermediate))
+    def scatterTask(subDomain: SubDomain): ScatterTask[SubDomain, Output] =
+      new SimpleScatterTask[SubDomain, Output] {
+        override def run(): Unit = _gatheredOutput = Option(toOutput(subDomain))
       }
     def gatherTask(outputs: Iterable[Output]): GatherTask[Output] = new SimpleGatherTask[Output] {
       private var _output: Option[Output] = None
-      override def output: Output = _output.get
+      override def gatheredOutput: Output = _output.get
       override def run(): Unit = _output = Option(toFinalOutput(outputs))
     }
   }
 
   /** Creates a ScatterGatherPipeline from the supplied methods */
-  def apply[Input, Intermediate, Output]
+  def apply[Domain, SubDomain, Output]
   (
-    in: Input,
-    toIntermediates: Input => Iterable[Intermediate],
-    toOutput: Intermediate => Output,
+    inDomain: Domain,
+    toSubDomains: Domain => Iterable[SubDomain],
+    toOutput: SubDomain => Output,
     toFinalOutput: Iterable[Output] => Output
-  ): ScatterGatherFramework[Input, Intermediate, Output] = {
-    new ScatterGatherPipelineAdaptor[Input, Intermediate, Output](
-      in=in,
-      toIntermediates=toIntermediates,
+  ): ScatterGatherFramework[Domain, SubDomain, Output] = {
+    new ScatterGatherPipelineAdaptor[Domain, SubDomain, Output](
+      inDomain=inDomain,
+      toSubDomains=toSubDomains,
       toOutput=toOutput,
       toFinalOutput=toFinalOutput
     )
@@ -115,45 +115,45 @@ object ScatterGatherPipeline {
   * scatter gather framework.  It also implements a simple single gather step to gather all the outputs of
   * the scatter steps.
   *
-  * @tparam Input        the input type to the scatter gather.
-  * @tparam Intermediate the input type to each scatter.
+  * @tparam Domain        the input type to the scatter gather.
+  * @tparam SubDomain the input type to each scatter.
   * @tparam Output       the output type of hte scatter gather.
   */
-trait ScatterGatherPipeline[Input, Intermediate, Output]
-  extends ScatterGatherFramework[Input, Intermediate, Output] {
-  import ScatterGatherPipeline.{OutputTaskDelegator, LazyOutputTaskDelegator}
+trait ScatterGatherPipeline[Domain, SubDomain, Output]
+  extends ScatterGatherFramework[Domain, SubDomain, Output] {
+  import ScatterGatherPipeline.{GatherOutputTaskDelegator, LazyGatherOutputTaskDelegator}
 
   /** The gather pipeline, which will return the final output. */
-  private var gatherPipeline: Option[OutputPipeline] = None
+  private var gatherPipeline: Option[GatherOutputPipeline] = None
 
   /** The output of the final gather task.  This method should only be called after the this pipeline has been run.
     * Use a [[Callback]] if you wish to have another task depend on this value. */
-  override final def output: Output = gatherPipeline.get.output
+  override final def gatheredOutput: Output = gatherPipeline.get.gatheredOutput
 
   override final def build(): Unit = {
-    val inputTask = splitInputTask(input)
-    gatherPipeline = Some(new OutputPipeline)
+    val inputTask = splitDomainTask(domain)
+    gatherPipeline = Some(new GatherOutputPipeline)
     root ==> inputTask ==> gatherPipeline.get
     // set the intermediate inputs for the scatter steps to be updated after the input has been split. */
-    Callbacks.connect(gatherPipeline.get, inputTask)((dest, src) => dest.intermediates = src.inputs)
+    Callbacks.connect(gatherPipeline.get, inputTask)((dest, src) => dest.subDomains = src.subDomains)
   }
 
   /** Simple pipeline to wrap the creation of the scatter and gather tasks. This should depend on the `splitInputTask`
     * since the inputs to the scatter steps will not be available until the `splitInputTask` task completes. */
-  private class OutputPipeline extends Pipeline with OutputTaskDelegator[Output] {
+  private class GatherOutputPipeline extends Pipeline with GatherOutputTaskDelegator[Output] {
     /** The intermediate inputs are the inputs to the scatter steps.  A callback should be create to set these. */
-    var intermediates: Iterable[Intermediate] = Nil
+    var subDomains: Iterable[SubDomain] = Nil
     override def build(): Unit = {
-      val tasks = scatterTasks(intermediates)
+      val tasks = scatterTasks(subDomains)
       tasks.foreach(root ==> _)
-      outputTask = Some(finalOutputTask(tasks))
+      gatherOutputTask = Some(finalOutputTask(tasks))
     }
   }
 
   /** Generates a single gather step that gathers all the scatters. */
-  override protected def finalOutputTask(inputTasks: Iterable[ScatterTask[Intermediate,Output]]): OutputTask[Output] = {
+  override protected def finalOutputTask(inputTasks: Iterable[ScatterTask[SubDomain,Output]]): OutputTask[Output] = {
     // do not *create* the gather step until the scatter steps have completed.
-    val task = new LazyOutputTaskDelegator[Output](
+    val task = new LazyGatherOutputTaskDelegator[Output](
       inputTasks=inputTasks,
       generateGatherTask=gatherTask
     )
@@ -168,34 +168,34 @@ object MergingScatterGatherPipeline {
   val DefaultMergeSize = 2
 
   /** Creates a MergingScatterGatherPipeline from the supplied methods */
-  def apply[Input, Intermediate, Output]
+  def apply[Domain, SubDomain, Output]
   (
-    in: Input,
-    toIntermediates: Input => Iterable[Intermediate],
-    toOutput: Intermediate => Output,
+    inDomain: Domain,
+    toSubDomains: Domain => Iterable[SubDomain],
+    toOutput: SubDomain => Output,
     toFinalOutput: Iterable[Output] => Output
-  ): MergingScatterGatherPipeline[Input, Intermediate, Output] = {
-    new ScatterGatherPipelineAdaptor[Input, Intermediate, Output](
-      in=in,
-      toIntermediates=toIntermediates,
+  ): MergingScatterGatherPipeline[Domain, SubDomain, Output] = {
+    new ScatterGatherPipelineAdaptor[Domain, SubDomain, Output](
+      inDomain=inDomain,
+      toSubDomains=toSubDomains,
       toOutput=toOutput,
       toFinalOutput=toFinalOutput
-    ) with MergingScatterGatherPipeline[Input, Intermediate, Output]
+    ) with MergingScatterGatherPipeline[Domain, SubDomain, Output]
   }
 }
 
 /** A scatter-gather pipeline that will perform a recursive merge gather (ala merge-sort).  Please note that
   * `gatherTask` must be able to be called multiple times for this to work.
   * */
-trait MergingScatterGatherPipeline[Input, Intermediate, Output]
-  extends ScatterGatherPipeline[Input, Intermediate, Output] {
-  import ScatterGatherPipeline.LazyOutputTaskDelegator
+trait MergingScatterGatherPipeline[Domain, SubDomain, Output]
+  extends ScatterGatherPipeline[Domain, SubDomain, Output] {
+  import ScatterGatherPipeline.LazyGatherOutputTaskDelegator
 
   def mergeSize: Int = MergingScatterGatherPipeline.DefaultMergeSize
 
   /** Performs a recursive merge of the gather steps, grouping scatter steps into sub-sets based on the merge size,
     * merging each sub-set, and iterating until there is only one step. */
-  override protected def finalOutputTask(inputTasks: Iterable[ScatterTask[Intermediate, Output]]): OutputTask[Output] = {
+  override protected def finalOutputTask(inputTasks: Iterable[ScatterTask[SubDomain, Output]]): OutputTask[Output] = {
     if (inputTasks.size == 1) {
       inputTasks.head
     }
@@ -205,7 +205,7 @@ trait MergingScatterGatherPipeline[Input, Intermediate, Output]
         currentTasks = currentTasks.sliding(mergeSize, mergeSize).map {
           tasks =>
             if (tasks.size > 1) {
-              new LazyOutputTaskDelegator(inputTasks=tasks, generateGatherTask=gatherTask)
+              new LazyGatherOutputTaskDelegator(inputTasks=tasks, generateGatherTask=gatherTask)
             }
             else {
               tasks.head

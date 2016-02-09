@@ -48,28 +48,28 @@ class ScatterGatherPipelineTest extends UnitSpec with BeforeAndAfterAll {
   /** The task that generates the inputs for each scatter */
   class InputTask(val input: String) extends SimpleInJvmTask with SplitInputTask[String, Char] {
     withName("Inputs Task")
-    override def run(): Unit = _inputs = Some(input.toSeq)
+    override def run(): Unit = _subDomains = Some(input.toSeq)
   }
 
   /** The scatter task */
   class CountCharLength(val input: Char, ignoreCharacters: String = " ") extends SimpleInJvmTask with ScatterTask[Char, Int] {
     withName(s"Scatter Task: '$input'")
-    override def run(): Unit = _output = Some(if (ignoreCharacters.contains(input)) 0 else 1)
+    override def run(): Unit = _gatheredOutput = Some(if (ignoreCharacters.contains(input)) 0 else 1)
   }
 
   /** The gather task */
   class SumTask(val inputs: Iterable[Int]) extends SimpleInJvmTask with GatherTask[Int] {
     withName("Gather Task")
     private var _output: Option[Int] = None
-    override def output: Int = _output.get
+    override def gatheredOutput: Int = _output.get
     override def run(): Unit = _output = Some(inputs.sum[Int])
   }
 
   /** The base scatter gather */
   class ScatterGather(str: String)
     extends ScatterGatherPipeline[String, Char, Int] {
-    def input: String = str
-    def splitInputTask(input: String): SplitInputTask[String, Char] = new InputTask(input)
+    def domain: String = str
+    def splitDomainTask(input: String): SplitInputTask[String, Char] = new InputTask(input)
     def scatterTask(intermediate: Char): ScatterTask[Char, Int] = new CountCharLength(intermediate)
     def gatherTask(outputs: Iterable[Int]): GatherTask[Int] = new SumTask(inputs = outputs)
   }
@@ -87,7 +87,7 @@ class ScatterGatherPipelineTest extends UnitSpec with BeforeAndAfterAll {
     val simpleScatterGather = new ScatterGather(str = str)
     taskManager.addTask(simpleScatterGather)
     taskManager.runAllTasks(sleepMilliseconds = 10, timeout = 1)
-    simpleScatterGather.output shouldBe 29
+    simpleScatterGather.gatheredOutput shouldBe 29
   }
 
   it should "run a simple scatter gather with the apply method" in {
@@ -95,14 +95,14 @@ class ScatterGatherPipelineTest extends UnitSpec with BeforeAndAfterAll {
     val str = "a b c d e f g h i j k l m n o p q r s t u v w x y z ä å ö"
 
     val simpleScatterGather = ScatterGatherPipeline[String, Char, Int](
-      in = str,
-      toIntermediates = input => input.toSeq,
+      inDomain = str,
+      toSubDomains = input => input.toSeq,
       toOutput = c => if (" ".contains(c)) 0 else 1,
       toFinalOutput = inputs => inputs.sum[Int]
     )
     taskManager.addTask(simpleScatterGather)
     taskManager.runAllTasks(sleepMilliseconds = 10, timeout = 1)
-    simpleScatterGather.output shouldBe 29
+    simpleScatterGather.gatheredOutput shouldBe 29
   }
 
   it should "run a merging scatter gather" in {
@@ -114,7 +114,7 @@ class ScatterGatherPipelineTest extends UnitSpec with BeforeAndAfterAll {
       val mergingScatterGather = new MergingScatterGather(str = str, mergeSize = mergeSize)
       taskManager.addTask(mergingScatterGather)
       taskManager.runAllTasks(sleepMilliseconds = 10, timeout = 1)
-      mergingScatterGather.output shouldBe 29
+      mergingScatterGather.gatheredOutput shouldBe 29
     }
   }
 
@@ -164,14 +164,14 @@ class ScatterGatherPipelineTest extends UnitSpec with BeforeAndAfterAll {
     val input = writeTmpFile(str)
 
     val simpleScatterGather = ScatterGatherPipeline[Path, Path, Path](
-      in = input,
-      toIntermediates = fileBasedToIntermediates,
+      inDomain = input,
+      toSubDomains = fileBasedToIntermediates,
       toOutput = fileBasedToOutput,
       toFinalOutput = fileBasedToFinalOutput
     )
     taskManager.addTask(simpleScatterGather)
     taskManager.runAllTasks(sleepMilliseconds = 10, timeout = 1)
-    Integer.parseInt(scala.io.Source.fromFile(simpleScatterGather.output.toFile).mkString) shouldBe 29
+    Integer.parseInt(scala.io.Source.fromFile(simpleScatterGather.gatheredOutput.toFile).mkString) shouldBe 29
   }
 
   it should "run a merging scatter gather on paths" in {
@@ -183,14 +183,14 @@ class ScatterGatherPipelineTest extends UnitSpec with BeforeAndAfterAll {
       val taskManager = getDefaultTaskManager
 
       val mergingScatterGather = MergingScatterGatherPipeline[Path, Path, Path](
-        in = input,
-        toIntermediates = fileBasedToIntermediates,
+        inDomain = input,
+        toSubDomains = fileBasedToIntermediates,
         toOutput = fileBasedToOutput,
         toFinalOutput = fileBasedToFinalOutput
       )
       taskManager.addTask(mergingScatterGather)
       taskManager.runAllTasks(sleepMilliseconds=10, timeout=1)
-      Integer.parseInt(scala.io.Source.fromFile(mergingScatterGather.output.toFile).mkString) shouldBe 29
+      Integer.parseInt(scala.io.Source.fromFile(mergingScatterGather.gatheredOutput.toFile).mkString) shouldBe 29
     }
   }
 }

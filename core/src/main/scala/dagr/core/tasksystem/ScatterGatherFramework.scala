@@ -44,28 +44,28 @@ package dagr.core.tasksystem
   *
   * Be sure to mix-in the appropriate trait in the task returned by each method.
   *
-  * @tparam Input        the input type to the scatter gather.
-  * @tparam Intermediate the input type to each scatter.
+  * @tparam Domain        the input type to the scatter gather.
+  * @tparam SubDomain the input type to each scatter.
   * @tparam Output       the output type of the scatter gather.
   **/
-trait ScatterGatherFramework[Input, Intermediate, Output] extends Pipeline with GatherTask[Output] {
+trait ScatterGatherFramework[Domain, SubDomain, Output] extends Pipeline with GatherTask[Output] {
 
   /** The input to the scatter gather */
-  def input: Input
+  def domain: Domain
 
   /** Generates a task to split the input into multiple inputs for the scatter tasks. */
-  def splitInputTask(input: Input): SplitInputTask[Input, Intermediate]
+  def splitDomainTask(domain: Domain): SplitInputTask[Domain, SubDomain]
 
   /** Generates a scatter task from an input meant for a scatter task. */
-  def scatterTask(intermediate: Intermediate): ScatterTask[Intermediate, Output]
+  def scatterTask(subDomain: SubDomain): ScatterTask[SubDomain, Output]
 
   /** Generates a gather task that gathers an ordered set of outputs */
   def gatherTask(outputs: Iterable[Output]): GatherTask[Output]
 
   /** Generates the scatter tasks.  No dependencies should be set between scatter tasks and either the split input or
     * gather tasks in this method. */
-  protected def scatterTasks(intermediates: Iterable[Intermediate]): Iterable[ScatterTask[Intermediate,Output]] = {
-    intermediates.map(in => scatterTask(in))
+  protected def scatterTasks(subDomains: Iterable[SubDomain]): Iterable[ScatterTask[SubDomain,Output]] = {
+    subDomains.map(in => scatterTask(in))
   }
 
   /** Provides the final task that contains the output of the scatter gather.  In the case that there is only one scatter,
@@ -78,7 +78,7 @@ trait ScatterGatherFramework[Input, Intermediate, Output] extends Pipeline with 
     *
     * The gather task(s) should have their dependencies set in this method.
     */
-  protected def finalOutputTask(inputTasks: Iterable[ScatterTask[Intermediate,Output]]): OutputTask[Output]
+  protected def finalOutputTask(inputTasks: Iterable[ScatterTask[SubDomain,Output]]): OutputTask[Output]
 }
 
 /** All tasks that split the input into inputs for the scatter tasks should extend this trait.
@@ -86,14 +86,14 @@ trait ScatterGatherFramework[Input, Intermediate, Output] extends Pipeline with 
   * Provides a method that returns the inputs to the scatter tasks.  The method
   * should only be called *after* this task has been run.  This is typically ensured by
   * using a [[Callback]]. */
-trait SplitInputTask[Input,Intermediate] extends Task {
-  protected var _inputs: Option[Iterable[Intermediate]] = None
-  final def inputs: Iterable[Intermediate] = _inputs.get
+trait SplitInputTask[Domain, SubDomain] extends Task {
+  protected var _subDomains: Option[Iterable[SubDomain]] = None
+  final def subDomains: Iterable[SubDomain] = _subDomains.get
 }
 
 /** A task that can return a specific output after it has been run. */
 trait OutputTask[Output] extends Task {
-  def output: Output
+  def gatheredOutput: Output
 }
 
 /** All tasks that perform the scatter step should extend this trait.
@@ -102,9 +102,9 @@ trait OutputTask[Output] extends Task {
   * should only be called *after* this task has been run.  This is typically ensured by
   * using a [[Callback]].
   */
-trait ScatterTask[Intermediate,Output] extends OutputTask[Output] {
-  protected var _output: Option[Output] = None
-  final def output: Output = _output.get
+trait ScatterTask[SubDomain, Output] extends OutputTask[Output] {
+  protected var _gatheredOutput: Option[Output] = None
+  final def gatheredOutput: Output = _gatheredOutput.get
 }
 
 /** All tasks that perform the gather step should extend this triat.
