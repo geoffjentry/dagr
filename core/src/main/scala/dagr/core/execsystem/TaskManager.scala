@@ -134,14 +134,16 @@ object TaskManager extends LazyLogging {
   * @param scheduler            the scheduler, otherwise we use the default
   * @param simulate             true if we are to simulate running tasks, false otherwise
   * @param sleepMilliseconds    the time to wait in milliseconds to wait between trying to schedule tasks.
+  * @param taskTop              print an top-like interface with the give delay in seconds
   */
 class TaskManager(taskManagerResources: TaskManagerResources = TaskManagerDefaults.defaultTaskManagerResources,
                   scriptsDirectory: Option[Path]             = None,
                   logDirectory: Option[Path]                 = None,
                   scheduler: Scheduler                       = TaskManagerDefaults.defaultScheduler,
                   simulate: Boolean                          = false,
-                  sleepMilliseconds: Int                     = 1000
-) extends TaskManagerLike with TaskTracker with TaskStatusReporter with LazyLogging {
+                  sleepMilliseconds: Int                     = 1000,
+                  taskTop: Double                            = -1
+) extends TaskManagerLike with TaskTracker with FinalStatusReporter with TopLikeStatusReporter with LazyLogging {
 
   private val actualScriptsDirectory = scriptsDirectory getOrElse Io.makeTempDir("scripts")
   private val actualLogsDirectory    = logDirectory getOrElse Io.makeTempDir("logs")
@@ -155,7 +157,7 @@ class TaskManager(taskManagerResources: TaskManagerResources = TaskManagerDefaul
   logger.info("Script files will be written to: " + actualScriptsDirectory)
   logger.info("Logs will be written to: " + actualLogsDirectory)
 
-  private[execsystem] def getTaskManagerResources: TaskManagerResources = taskManagerResources
+  private[core] def getTaskManagerResources: TaskManagerResources = taskManagerResources
 
   private def pathFor(task: Task, taskId: TaskId, directory: Path, ext: String): Path = {
     val sanitizedName: String = PathUtil.sanitizeFileName(task.name)
@@ -475,6 +477,10 @@ class TaskManager(taskManagerResources: TaskManagerResources = TaskManagerDefaul
     }
   }
 
+  protected def runningTasksMap: Map[UnitTask, ResourceSet] = Map(taskExecutionRunner.runningTaskIds.toList.map(id => this(id).task).map(task => (task.asInstanceOf[UnitTask], task.taskInfo.resources)) : _*)
+
+  protected def readyTasksList: List[UnitTask] = graphNodesInStateFor(NO_PREDECESSORS).toList.map(node => node.task.asInstanceOf[UnitTask])
+
   override def stepExecution(): (Traversable[Task], Traversable[Task], Traversable[Task], Traversable[Task]) = {
     logger.debug("runSchedulerOnce: starting one round of execution")
 
@@ -491,8 +497,7 @@ class TaskManager(taskManagerResources: TaskManagerResources = TaskManagerDefaul
     invokeCallbacksAndGetTasks()
 
     // get the running tasks to estimate currently used resources
-    val runningTasks: Map[UnitTask, ResourceSet] = Map(
-    taskExecutionRunner.runningTaskIds.toList.map(id => this(id).task).map(task => (task.asInstanceOf[UnitTask], task.taskInfo.resources)) : _*)
+    val runningTasks: Map[UnitTask, ResourceSet] = runningTasksMap
 
     // get the tasks that are eligible for execution (tasks with no dependents)
     val readyTasks: List[UnitTask] = graphNodesInStateFor(NO_PREDECESSORS).toList.map(node => node.task.asInstanceOf[UnitTask])
@@ -523,7 +528,29 @@ class TaskManager(taskManagerResources: TaskManagerResources = TaskManagerDefaul
     )
   }
 
+  /** Refreshes the top-like interface */
+  private class TerminalThread(terminal: TopLikeStatusReporter) extends Runnable {
+    override def run(): Unit = {
+      try {
+        if (0 < taskTop) {
+          // skip over any current output
+          print(CursorMovement.clearScreen)
+          // keep printing
+          while (true) {
+            terminal.refresh(print)
+            Thread.sleep((taskTop * 1000).toInt)
+          }
+        }
+      } catch {
+        case e: InterruptedException => // ignore
+      }
+    }
+  }
+
   override def runToCompletion(failFast: Boolean): BiMap[Task, TaskExecutionInfo] = {
+    val terminalThread = if (0 < taskTop) Some(new Thread(new TerminalThread(this))) else None
+    terminalThread.foreach(_.start())
+
     var allDone = false
     while (!allDone) {
       val (readyTasks, tasksToSchedule, runningTasks, _) = stepExecution()
@@ -548,6 +575,13 @@ class TaskManager(taskManagerResources: TaskManagerResources = TaskManagerDefaul
     // terminate all running tasks
     for (node <- graphNodes.filter(node => node.state == RUNNING)) {
       taskExecutionRunner.terminateTask(node.taskId)
+    }
+
+    terminalThread.foreach { thread =>
+      if (thread.isAlive) thread.interrupt()
+      thread.join()
+      this.refresh(print)
+      print("\n")
     }
 
     taskToInfoBiMapFor

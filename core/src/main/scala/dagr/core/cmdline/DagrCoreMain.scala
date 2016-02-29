@@ -60,7 +60,6 @@ object DagrCoreMain extends Configuration {
     )
   }
 
-
   /**
     * Main entry point for the class. Parses the args and executes the pipeline. */
   def makeItSo(args: Array[String], packageList: List[String] = getPackageList): Unit = {
@@ -142,7 +141,9 @@ class DagrCoreMain(
   @arg(doc = "Set the memory available to dagr.", common = true)
   val memory: Option[String] = None,
   @arg(doc = "Write an execution report to this file, otherwise write to the stdout", common = true)
-  val report: Option[Path] = None
+  val report: Option[Path] = None,
+  @arg(doc = "Provide an top-like interface for tasks with the give delay in seconds. This suppress info logging.")
+  val taskTop: Double = -1
 ) extends LazyLogging {
 
   // These are not optional, but are only populated during configure()
@@ -168,10 +169,6 @@ class DagrCoreMain(
     try {
       val config = new Configuration { }
 
-      // System and JVM resources
-      val systemCores  = config.optionallyConfigure[Double](Configuration.Keys.SystemCores) orElse this.cores
-      val systemMemory = config.optionallyConfigure[String](Configuration.Keys.SystemMemory) orElse this.memory
-
       // scripts & logs directories
       val scriptsDirectory = pick(this.scriptDir, pipeline.outputDirectory.map(_.resolve("scripts")),
         config.optionallyConfigure(Configuration.Keys.ScriptDirectory))
@@ -189,10 +186,20 @@ class DagrCoreMain(
       this.reportPath = pick(report, pipeline.outputDirectory.map(_.resolve("execution_report.txt")), Option(Io.StdOut)).map(_.toAbsolutePath)
       this.reportPath.foreach(p => Io.assertCanWriteFile(p, parentMustExist=false))
 
-      Logger.level = this.logLevel
+      if (0 < taskTop && !Terminal.supportsAnsi) throw new ValidationException("ANSI codes are not supported in your terminal.  Interactive mode will not function properly.")
+
+      // TODO: Perhaps have the top-like interface have a line or two that shows the last info message?
+      Logger.level = if (0 < taskTop) LogLevel.Error else this.logLevel
 
       val resources = TaskManagerResources(cores = cores.map(Cores(_)), totalMemory = memory.map(Memory(_)))
-      this.taskManager = Some(new TaskManager(taskManagerResources=resources, scriptsDirectory = scriptsDirectory, logDirectory = logDirectory))
+      this.taskManager = Some(
+        new TaskManager(
+          taskManagerResources=resources,
+          scriptsDirectory = scriptsDirectory,
+          logDirectory = logDirectory,
+          taskTop = taskTop
+        )
+      )
     }
     catch {
       case v: ValidationException => throw v
@@ -212,9 +219,11 @@ class DagrCoreMain(
     taskMan.runToCompletion(this.failFast)
 
     // Write out the execution report
-    val pw = new PrintWriter(Io.toWriter(report))
-    taskMan.logReport({str: String => pw.write(str + "\n")})
-    pw.close()
+    if (taskTop < 0 || Io.StdOut != report) {
+      val pw = new PrintWriter(Io.toWriter(report))
+      taskMan.logReport({ str: String => pw.write(str + "\n") })
+      pw.close()
+    }
 
     // return an exit code based on the number of non-completed tasks
     taskMan.taskToInfoBiMapFor.count { case (task, info) =>
